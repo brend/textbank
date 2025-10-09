@@ -1,0 +1,45 @@
+# Rust
+/target/
+**/target/**
+**/*.rmeta
+**/*.rlib
+**/*.d
+**/*.o
+**/*.so
+**/*.dll
+**/*.dylib
+**/*.bin
+**/*.exe
+**/*.a
+**/*.lib
+**/*.pdb
+**/*.def
+**/*.exp
+**/*.rs.bk
+**/*.swp
+**/*.swo
+Cargo.lock
+# VS Code
+.vscode/
+# By-products
+*.log
+*.tmp
+*.bak
+*.old
+*.orig
+# OS
+.DS_Store
+Thumbs.db
+# Test output
+/coverage/
+# IDEs
+.idea/
+*.iml
+# Misc
+*.cache
+*.out
+*.pyc
+*.pyo
+*.pyd
+# Node
+node_modules/

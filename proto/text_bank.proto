@@ -1,0 +1,15 @@
+syntax = "proto3";
+package textbank;
+
+service TextBank {
+  // (string, lang) -> id (idempotent)
+  rpc Intern(InternRequest) returns (InternReply);
+  // (id, lang) -> string
+  rpc Get(GetRequest) returns (GetReply);
+}
+
+message InternRequest { string lang = 1; bytes text = 2; }
+message InternReply   { uint64 text_id = 1; bool existed = 2; }
+
+message GetRequest    { uint64 text_id = 1; string lang = 2; }
+message GetReply      { bool found = 1; bytes text = 2; }

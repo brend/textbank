@@ -1,0 +1,20 @@
+[package]
+name = "textbank"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "fs", "signal"] }
+tonic = "0.12"
+prost = "0.13"
+dashmap = "6"
+unicode-normalization = "0.1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+parking_lot = "0.12"
+
+[build-dependencies]
+tonic-build = "0.12"
+prost-build = "0.13"
