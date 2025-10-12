@@ -15,7 +15,10 @@
         "editorconfig.editorconfig"
       ],
       "settings": {
-        "rust-analyzer.checkOnSave.command": "clippy",
+        "rust-analyzer.check": {
+          "command": "clippy"
+        },
+        "rust-analyzer.checkOnSave": true,
         "editor.formatOnSave": true
       }
     }
