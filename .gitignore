@@ -43,3 +43,5 @@ Thumbs.db
 *.pyd
 # Node
 node_modules/
+# textbank
+data/textbank.wal
