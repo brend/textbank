@@ -1,0 +1,26 @@
+name: Deploy Rust docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build docs
+        run: |
+          cargo doc --no-deps --workspace --all-features
+          CRATE_NAME=$(basename $(pwd))
+          echo '<meta http-equiv="refresh" content="0;url='"$CRATE_NAME"'/index.html">' > target/doc/index.html
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./target/doc
