@@ -45,3 +45,4 @@ Thumbs.db
 node_modules/
 # textbank
 data/textbank.wal
+data/wal.jsonl
