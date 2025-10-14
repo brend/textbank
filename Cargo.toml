@@ -47,6 +47,9 @@ clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 rand = "0.8"
 
+# REPL dependencies
+rustyline = "14"
+
 [build-dependencies]
 # Protocol buffer code generation
 tonic-build = "0.12"
@@ -62,6 +65,12 @@ doc = true
 name = "bench"
 path = "src/bin/bench.rs"
 doc = true
+
+[[bin]]
+name = "repl"
+path = "src/bin/repl.rs"
+doc = true
+description = "Interactive REPL for TextBank service"
 
 [profile.release]
 # Optimizations for production deployment

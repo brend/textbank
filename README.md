@@ -176,9 +176,111 @@ message SearchHit {
 - **Cross-language** (`lang` empty): Searches all languages, preferring English results
 - **Pattern**: Uses Rust regex syntax, applied to normalized text
 
+## Interactive REPL
+
+TextBank includes an interactive Read-Eval-Print Loop (REPL) for easy testing and exploration:
+
+```bash
+# Start the interactive REPL
+cargo run --bin repl
+
+# Or build and run directly
+cargo build --bin repl
+./target/debug/repl
+```
+
+The REPL automatically starts the TextBank service in the background and provides a user-friendly command-line interface.
+
+### REPL Commands
+
+```
+Commands:
+  help                           - Show help message
+  quit, exit                     - Exit the REPL
+  intern <lang> <text>           - Add text in specified language
+  intern <id> <lang> <text>      - Add/update text with specific ID
+  get <id> [lang]                - Get text by ID, optionally in specific language
+  getall <id>                    - Get all translations for an ID
+  search <pattern> [lang]        - Search texts using regex pattern (case-insensitive by default)
+  stats                          - Show service statistics
+```
+
+### REPL Examples
+
+```bash
+textbank> intern en "Hello world"
+✓ Text added with ID: 1
+
+textbank> intern fr "Bonjour le monde"
+✓ Text added with ID: 2
+
+textbank> intern 1 fr "Bonjour le monde"
+✓ Text added with ID: 1
+
+textbank> get 1
+ID 1: "Hello world"
+
+textbank> get 1 fr
+ID 1: "Bonjour le monde"
+
+textbank> getall 1
+✓ Found 2 translations for ID 1:
+  en: "Hello world"
+  fr: "Bonjour le monde"
+
+textbank> search "hello.*world"
+✓ Found 1 match:
+  ID 1: "Hello world"
+
+textbank> search "bonjour" fr
+✓ Found 1 match:
+  ID 1: "Bonjour le monde"
+
+textbank> stats
+TextBank Service Statistics:
+  Service: Connected ✓
+  Protocol: gRPC over HTTP/2
+  Address: 127.0.0.1:50051
+  Status: Service responding ✓
+
+textbank> quit
+Goodbye!
+```
+
+### REPL Features
+
+- **Auto-start Service**: Automatically starts the TextBank gRPC service
+- **Case-insensitive Search**: Search is case-insensitive by default
+- **Rich Output**: Colored output with success/error indicators (✓/✗)
+- **Command History**: Uses rustyline for command history and editing
+- **Error Handling**: Graceful error messages with helpful hints
+- **Tab Completion**: Basic command completion support
+
+### Advanced Search Patterns
+
+The REPL supports full Rust regex syntax:
+
+```bash
+# Case-insensitive search (default)
+textbank> search "hello.*world"
+
+# Force case-sensitive search
+textbank> search "(?-i)Hello.*World"
+
+# Word boundaries
+textbank> search "\bhello\b"
+
+# Unicode patterns
+textbank> search "café|coffee"
+
+# Anchored patterns
+textbank> search "^Hello"     # Starts with
+textbank> search "world$"     # Ends with
+```
+
 ## Command Line Interface
 
-TextBank includes a shell script wrapper for easy interaction:
+TextBank also includes a shell script wrapper for scripting and automation:
 
 ```bash
 # Make executable
@@ -199,9 +301,6 @@ chmod +x textbank.sh
 # Search text
 ./textbank.sh search "Hello.*"
 # Output: {"hits":[{"textId":"1","text":"SGVsbG8sIFdvcmxkIQ=="}]}
-
-# Interactive mode
-./textbank.sh repl
 ```
 
 ### CLI Examples
@@ -357,8 +456,15 @@ TextBank uses XXH3-64 hashing with a language-specific salt:
 # Development build with debug symbols
 cargo build
 
+# Build all binaries (server, repl, benchmark)
+cargo build --bins
+
 # Optimized release build
 cargo build --release
+
+# Build specific binaries
+cargo build --bin repl      # Interactive REPL
+cargo build --bin bench     # Benchmark tool
 
 # Run tests
 cargo test
@@ -384,14 +490,17 @@ cargo build
 ```
 textbank/
 ├── src/
-│   ├── main.rs          # Main service implementation
+│   ├── lib.rs           # Library code (Store, service implementation)
+│   ├── main.rs          # Main gRPC server binary
 │   └── bin/
+│       ├── repl.rs      # Interactive REPL
 │       └── bench.rs     # Benchmark tool
 ├── proto/
 │   └── text_bank.proto  # gRPC service definition  
 ├── data/                # WAL storage directory (created at runtime)
 ├── build.rs             # Protocol buffer code generation
 ├── textbank.sh          # CLI wrapper script
+├── test_repl.sh         # REPL testing script
 └── Cargo.toml           # Dependencies and metadata
 ```
 
