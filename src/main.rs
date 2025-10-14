@@ -87,13 +87,16 @@ struct RevEntry {
     text_id: u64,
 }
 
+type ForwardLookup = DashMap<u64, Arc<DashMap<String, Arc<str>>>>;
+type ReverseLookup = DashMap<(String, u64), Arc<DashMap<u64, RevEntry>>>;
+
 /// The in-memory store: two views
 /// - forward: text_id -> (lang -> string)
 /// - reverse: (lang, hash) -> candidates
 #[derive(Clone)]
 struct Store {
-    forward: Arc<DashMap<u64, Arc<DashMap<String, Arc<str>>>>>,
-    reverse: Arc<DashMap<(String, u64), Arc<DashMap<u64, RevEntry>>>>,
+    forward: Arc<ForwardLookup>,
+    reverse: Arc<ReverseLookup>,
     next_id: Arc<parking_lot::Mutex<u64>>,
     wal: Arc<Wal>,
 }
@@ -285,13 +288,6 @@ impl Store {
             }
         }
         out
-    }
-
-    /// Get (id, lang) -> string
-    fn get(&self, text_id: u64, lang: &str) -> Option<Arc<str>> {
-        self.forward
-            .get(&text_id)
-            .and_then(|lm| lm.get(lang).map(|v| v.clone()))
     }
 
     // Remove (id,lang) from reverse index using the OLD text (if present).
