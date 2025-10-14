@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["text_bank_client","text_bank_server"],"struct":["GetAllReply","GetAllRequest","GetReply","GetRequest","InternReply","InternRequest","SearchHit","SearchReply","SearchRequest","Translation"]};
