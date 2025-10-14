@@ -1,0 +1,1 @@
+searchState.loadedDescShard("repl", 0, "Interactive REPL for the TextBank service.\nREPL commands and their descriptions")

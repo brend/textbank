@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["main"],"mod":["pb"],"struct":["RevEntry","Store","Svc","Wal","WalRecord"],"type":["ForwardLookup","ReverseLookup"]};
+window.SIDEBAR_ITEMS = {"mod":["pb"],"struct":["Store","Svc"]};
