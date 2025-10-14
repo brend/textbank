@@ -1,3 +1,4 @@
+use regex::Regex;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
@@ -16,7 +17,10 @@ use xxhash_rust::xxh3::xxh3_64;
 pub mod pb {
     tonic::include_proto!("textbank");
 }
-use pb::{text_bank_server::{TextBank, TextBankServer}, *};
+use pb::{
+    text_bank_server::{TextBank, TextBankServer},
+    *,
+};
 
 /// WAL record persisted as one JSON object per line.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -42,7 +46,11 @@ impl Wal {
             .append(true)
             .read(true)
             .open(&path)?;
-        Ok(Self { file: Mutex::new(file), path, flush_on_write })
+        Ok(Self {
+            file: Mutex::new(file),
+            path,
+            flush_on_write,
+        })
     }
 
     fn append(&self, rec: &WalRecord) -> Result<()> {
@@ -62,7 +70,9 @@ impl Wal {
         let mut out = Vec::new();
         for line in rdr.lines() {
             let line = line?;
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let rec: WalRecord = serde_json::from_str(&line)?;
             out.push(rec);
         }
@@ -110,59 +120,204 @@ impl Store {
         xxh3_64(format!("{}\u{001F}{}", lang, norm).as_bytes())
     }
 
-    /// Intern (string, lang) -> id, idempotent. Persists via WAL.
-    fn intern(&self, lang: &str, raw: &[u8]) -> Result<(u64, bool)> {
+    /// Insert or update translation.
+    /// If `text_id` is Some, update/insert (id,lang)->text.
+    /// If `text_id` is None, return existing id if (lang,text) exists, else allocate.
+    fn intern_with_id(&self, lang: &str, raw: &[u8], text_id: Option<u64>) -> Result<(u64, bool)> {
         let norm = Self::normalize_text(raw)?;
         let h = Self::rev_hash(lang, &norm);
 
-        // Fast path: check reverse for existing exact match
-        if let Some(bucket) = self.reverse.get(&(lang.to_string(), h)) {
-            for entry in bucket.value().iter() {
-                if let Some(e) = bucket.value().get(entry.key()) {
-                    if &*e.text_arc == norm.as_str() {
-                        return Ok((e.text_id, true));
+        match text_id {
+            Some(id) => {
+                // Update path: remove old reverse entry if (id,lang) existed.
+                if let Some(lm) = self.forward.get(&id) {
+                    if let Some(old) = lm.get(lang) {
+                        // If text is identical, short-circuit
+                        if old.as_ref() == norm.as_str() {
+                            return Ok((id, true));
+                        }
+                        self.reverse_remove(id, lang, &old);
+                    }
+                }
+
+                let text_arc: Arc<str> = Arc::from(norm.clone());
+
+                // forward
+                let lang_map = self
+                    .forward
+                    .entry(id)
+                    .or_insert_with(|| Arc::new(DashMap::new()))
+                    .clone();
+                lang_map.insert(lang.to_string(), text_arc.clone());
+
+                // reverse
+                let cand_map = self
+                    .reverse
+                    .entry((lang.to_string(), h))
+                    .or_insert_with(|| Arc::new(DashMap::new()))
+                    .clone();
+                cand_map.insert(
+                    id,
+                    RevEntry {
+                        text_arc: text_arc.clone(),
+                        text_id: id,
+                    },
+                );
+
+                // WAL
+                self.wal.append(&WalRecord {
+                    text_id: id,
+                    lang: lang.to_string(),
+                    text: norm,
+                })?;
+                Ok((id, true)) // existed=true because we updated/confirmed this id
+            }
+            None => {
+                // Idempotent insert-by-(lang,text): check reverse bucket
+                if let Some(bucket) = self.reverse.get(&(lang.to_string(), h)) {
+                    for entry in bucket.value().iter() {
+                        if &*entry.value().text_arc == norm.as_str() {
+                            return Ok((entry.value().text_id, true));
+                        }
+                    }
+                }
+
+                // Allocate new id
+                let id = {
+                    let mut guard = self.next_id.lock();
+                    let id = *guard;
+                    *guard += 1;
+                    id
+                };
+
+                let text_arc: Arc<str> = Arc::from(norm.clone());
+
+                // forward
+                let lang_map = self
+                    .forward
+                    .entry(id)
+                    .or_insert_with(|| Arc::new(DashMap::new()))
+                    .clone();
+                lang_map.insert(lang.to_string(), text_arc.clone());
+
+                // reverse
+                let cand_map = self
+                    .reverse
+                    .entry((lang.to_string(), h))
+                    .or_insert_with(|| Arc::new(DashMap::new()))
+                    .clone();
+                cand_map.insert(
+                    id,
+                    RevEntry {
+                        text_arc: text_arc.clone(),
+                        text_id: id,
+                    },
+                );
+
+                // WAL
+                self.wal.append(&WalRecord {
+                    text_id: id,
+                    lang: lang.to_string(),
+                    text: norm,
+                })?;
+                Ok((id, false))
+            }
+        }
+    }
+
+    fn get_text(&self, text_id: u64, lang: &str) -> Option<Arc<str>> {
+        self.forward
+            .get(&text_id)
+            .and_then(|lm| lm.get(lang).map(|v| v.clone()))
+    }
+
+    fn get_all(&self, text_id: u64) -> Vec<(String, Arc<str>)> {
+        self.forward
+            .get(&text_id)
+            .map(|lm| {
+                lm.iter()
+                    .map(|kv| (kv.key().clone(), kv.value().clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Search normalized text by regex. If `lang` is Some, restrict to that language.
+    /// When `lang` is None, return one hit per text_id (prefer 'en').
+    fn search(&self, re: &Regex, lang: Option<&str>) -> Vec<(u64, Arc<str>)> {
+        let mut out = Vec::new();
+
+        match lang {
+            Some(l) => {
+                // Iterate all ids that have this language
+                for item in self.forward.iter() {
+                    let id = *item.key();
+                    if let Some(txt) = item.value().get(l) {
+                        if re.is_match(&txt) {
+                            out.push((id, txt.clone()));
+                        }
+                    }
+                }
+            }
+            None => {
+                use std::collections::HashSet;
+                let mut seen = HashSet::new();
+                for item in self.forward.iter() {
+                    let id = *item.key();
+                    // Prefer en if present and matches
+                    if let Some(txt) = item.value().get("en") {
+                        if re.is_match(&txt) {
+                            out.push((id, txt.clone()));
+                            seen.insert(id);
+                            continue;
+                        }
+                    }
+                    // Else any first matching language
+                    if !seen.contains(&id) {
+                        for kv in item.value().iter() {
+                            if re.is_match(kv.value()) {
+                                out.push((id, kv.value().clone()));
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
-
-        // Miss: allocate id
-        let text_id = {
-            let mut guard = self.next_id.lock();
-            let id = *guard;
-            *guard += 1;
-            id
-        };
-
-        let text_arc: Arc<str> = Arc::from(norm.clone());
-
-        // Insert into forward view
-        let lang_map = self.forward
-            .entry(text_id)
-            .or_insert_with(|| Arc::new(DashMap::new()))
-            .clone();
-        lang_map.insert(lang.to_string(), text_arc.clone());
-
-        // Insert into reverse view
-        let cand_map = self.reverse
-            .entry((lang.to_string(), h))
-            .or_insert_with(|| Arc::new(DashMap::new()))
-            .clone();
-        cand_map.insert(text_id, RevEntry { text_arc: text_arc.clone(), text_id });
-
-        // Persist
-        self.wal.append(&WalRecord {
-            text_id,
-            lang: lang.to_string(),
-            text: norm,
-        })?;
-
-        Ok((text_id, false))
+        out
     }
 
     /// Get (id, lang) -> string
     fn get(&self, text_id: u64, lang: &str) -> Option<Arc<str>> {
-        self.forward.get(&text_id).and_then(|lm| lm.get(lang).map(|v| v.clone()))
+        self.forward
+            .get(&text_id)
+            .and_then(|lm| lm.get(lang).map(|v| v.clone()))
+    }
+
+    // Remove (id,lang) from reverse index using the OLD text (if present).
+    fn reverse_remove(&self, text_id: u64, lang: &str, old_text: &str) {
+        let h = Self::rev_hash(lang, old_text);
+        if let Some(bucket) = self.reverse.get(&(lang.to_string(), h)) {
+            bucket.value().remove(&text_id);
+        }
+        // If you want to GC empty buckets:
+        // if let Some(mut b) = self.reverse.get_mut(&(lang.to_string(), h)) {
+        //     if b.value().is_empty() { self.reverse.remove(&(lang.to_string(), h)); }
+        // }
+    }
+
+    // Get preferred language: "en" if present, else any.
+    fn get_any(&self, text_id: u64) -> Option<(String, Arc<str>)> {
+        let lm = self.forward.get(&text_id)?;
+        if let Some(v) = lm.get("en") {
+            return Some(("en".to_string(), v.clone()));
+        }
+        // Fall back to any
+        let result = lm
+            .iter()
+            .next()
+            .map(|kv| (kv.key().clone(), kv.value().clone()));
+        result
     }
 
     /// Load from WAL (rebuild both indexes) and set counter = max_id + 1.
@@ -173,7 +328,8 @@ impl Store {
             let text_arc: Arc<str> = Arc::from(rec.text.clone());
 
             // forward
-            let lang_map = self.forward
+            let lang_map = self
+                .forward
                 .entry(rec.text_id)
                 .or_insert_with(|| Arc::new(DashMap::new()))
                 .clone();
@@ -181,11 +337,18 @@ impl Store {
 
             // reverse
             let h = Self::rev_hash(&rec.lang, &rec.text);
-            let cand_map = self.reverse
+            let cand_map = self
+                .reverse
                 .entry((rec.lang.clone(), h))
                 .or_insert_with(|| Arc::new(DashMap::new()))
                 .clone();
-            cand_map.insert(rec.text_id, RevEntry { text_arc: text_arc.clone(), text_id: rec.text_id });
+            cand_map.insert(
+                rec.text_id,
+                RevEntry {
+                    text_arc: text_arc.clone(),
+                    text_id: rec.text_id,
+                },
+            );
         }
         *self.next_id.lock() = max_id.saturating_add(1);
         Ok(())
@@ -205,18 +368,78 @@ impl TextBank for Svc {
         if r.lang.is_empty() {
             return Err(Status::invalid_argument("lang must not be empty"));
         }
-        match self.store.intern(&r.lang, &r.text) {
-            Ok((id, existed)) => Ok(Response::new(InternReply { text_id: id, existed })),
+        let id_opt = if r.text_id == 0 {
+            None
+        } else {
+            Some(r.text_id)
+        };
+        match self.store.intern_with_id(&r.lang, &r.text, id_opt) {
+            Ok((id, existed)) => Ok(Response::new(InternReply {
+                text_id: id,
+                existed,
+            })),
             Err(e) => Err(Status::internal(format!("intern failed: {e}"))),
         }
     }
 
     async fn get(&self, req: Request<GetRequest>) -> Result<Response<GetReply>, Status> {
         let r = req.into_inner();
-        match self.store.get(r.text_id, &r.lang) {
-            Some(s) => Ok(Response::new(GetReply { found: true, text: s.as_bytes().to_vec() })),
-            None => Ok(Response::new(GetReply { found: false, text: Vec::new() })),
+        let res = if r.lang.is_empty() {
+            self.store.get_any(r.text_id).map(|(_, s)| s)
+        } else {
+            self.store.get_text(r.text_id, &r.lang)
+        };
+        match res {
+            Some(s) => Ok(Response::new(GetReply {
+                found: true,
+                text: s.as_bytes().to_vec(),
+            })),
+            None => Ok(Response::new(GetReply {
+                found: false,
+                text: Vec::new(),
+            })),
         }
+    }
+
+    async fn get_all(&self, req: Request<GetAllRequest>) -> Result<Response<GetAllReply>, Status> {
+        let r = req.into_inner();
+        let translations = self
+            .store
+            .get_all(r.text_id)
+            .into_iter()
+            .map(|(lang, s)| Translation {
+                lang,
+                text: s.as_bytes().to_vec(),
+            })
+            .collect();
+        Ok(Response::new(GetAllReply {
+            text_id: r.text_id,
+            translations,
+        }))
+    }
+
+    async fn search(&self, req: Request<SearchRequest>) -> Result<Response<SearchReply>, Status> {
+        let r = req.into_inner();
+        let pattern = r.pattern;
+        let lang_opt = if r.lang.is_empty() {
+            None
+        } else {
+            Some(r.lang)
+        };
+        let re = regex::Regex::new(&pattern)
+            .map_err(|e| Status::invalid_argument(format!("bad regex: {e}")))?;
+
+        let hits = self
+            .store
+            .search(&re, lang_opt.as_deref())
+            .into_iter()
+            .map(|(id, s)| SearchHit {
+                text_id: id,
+                text: s.as_bytes().to_vec(),
+            })
+            .collect();
+
+        Ok(Response::new(SearchReply { hits }))
     }
 }
 
@@ -224,7 +447,7 @@ impl TextBank for Svc {
 async fn main() -> Result<()> {
     // Config
     let addr = "0.0.0.0:50051".parse().unwrap();
-    let wal = Wal::open("./data/textbank.wal", /*flush_on_write=*/false)?;
+    let wal = Wal::open("./data/textbank.wal", /*flush_on_write=*/ false)?;
     let store = Store::new(wal);
     store.load_from_wal()?;
 

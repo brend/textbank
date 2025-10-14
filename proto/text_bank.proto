@@ -2,14 +2,58 @@ syntax = "proto3";
 package textbank;
 
 service TextBank {
-  // (string, lang) -> id (idempotent)
+  // Insert or update a text translation. If text_id is unset/0, allocate.
   rpc Intern(InternRequest) returns (InternReply);
-  // (id, lang) -> string
+
+  // Get a text translation by id, optionally specifying a language.
   rpc Get(GetRequest) returns (GetReply);
+
+  // Get all translations for an id.
+  rpc GetAll(GetAllRequest) returns (GetAllReply);
+
+  // Search texts by regex, optionally restricting to a language.
+  rpc Search(SearchRequest) returns (SearchReply);
 }
 
-message InternRequest { string lang = 1; bytes text = 2; }
-message InternReply   { uint64 text_id = 1; bool existed = 2; }
+message InternRequest {
+  bytes text = 1;        // UTF-8
+  string lang = 2;       // required, e.g. "en"
+  uint64 text_id = 3;    // optional; 0 means "allocate / idempotent by text"
+}
+message InternReply {
+  uint64 text_id = 1;
+  bool existed = 2;      // true if (lang,text) already existed OR we updated an existing (id,lang)
+}
 
-message GetRequest    { uint64 text_id = 1; string lang = 2; }
-message GetReply      { bool found = 1; bytes text = 2; }
+message GetRequest {
+  uint64 text_id = 1;
+  string lang = 2;       // optional; empty = any
+}
+message GetReply {
+  bool found = 1;
+  bytes text = 2;        // UTF-8
+}
+
+message GetAllRequest {
+  uint64 text_id = 1;
+}
+message GetAllReply {
+  uint64 text_id = 1;
+  repeated Translation translations = 2;
+}
+message Translation {
+  string lang = 1;
+  bytes text = 2;
+}
+
+message SearchRequest {
+  string pattern = 1;    // Rust regex syntax; applied to normalized (NFC) text
+  string lang = 2;       // optional; empty = search across all languages
+}
+message SearchHit {
+  uint64 text_id = 1;
+  bytes text = 2;        // the matching text (in the chosen language)
+}
+message SearchReply {
+  repeated SearchHit hits = 1;
+}

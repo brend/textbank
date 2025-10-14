@@ -16,7 +16,10 @@ use pb::text_bank_client::TextBankClient;
 use pb::{GetRequest, InternRequest};
 
 #[derive(Parser, Debug)]
-#[command(name = "textbank-bench", about = "Load benchmark for TextBank gRPC service")]
+#[command(
+    name = "textbank-bench",
+    about = "Load benchmark for TextBank gRPC service"
+)]
 struct Args {
     /// Server address (http://host:port)
     #[arg(long, default_value = "http://127.0.0.1:50051")]
@@ -51,7 +54,10 @@ async fn mk_client(target: &str) -> TextBankClient<Channel> {
 async fn main() {
     let args = Args::parse();
     println!("Target: {}", args.target);
-    println!("Concurrency: {} | Ops: {} | Payload {}B | Warmup {}", args.concurrency, args.ops, args.payload_bytes, args.warmup_ops);
+    println!(
+        "Concurrency: {} | Ops: {} | Payload {}B | Warmup {}",
+        args.concurrency, args.ops, args.payload_bytes, args.warmup_ops
+    );
 
     // Shared histogram for end-to-end (Intern + Get) latencies
     let hist = Arc::new(tokio::sync::Mutex::new(
@@ -90,10 +96,14 @@ async fn main() {
         let warm_n = if wid == 0 {
             // Give remainder to the first worker
             warm_ops_per_worker + (args.warmup_ops % args.concurrency)
-        } else { warm_ops_per_worker };
+        } else {
+            warm_ops_per_worker
+        };
         let n = if wid == 0 {
             ops_per_worker + (args.ops % args.concurrency)
-        } else { ops_per_worker };
+        } else {
+            ops_per_worker
+        };
 
         let h = tokio::spawn(async move {
             // Get a dedicated client
@@ -111,18 +121,25 @@ async fn main() {
             // Warmup
             for _ in 0..warm_n {
                 for b in &mut payload {
-    *b = ALPH[rng.gen_range(0..ALPH.len())];
-}
+                    *b = ALPH[rng.gen_range(0..ALPH.len())];
+                }
                 let t1 = Instant::now();
                 let id = client
-                    .intern(InternRequest { lang: lang.clone(), text: payload.clone() })
+                    .intern(InternRequest {
+                        lang: lang.clone(),
+                        text: payload.clone(),
+                        text_id: 0,
+                    })
                     .await
                     .unwrap()
                     .into_inner()
                     .text_id;
 
                 let _ = client
-                    .get(GetRequest { text_id: id, lang: lang.clone() })
+                    .get(GetRequest {
+                        text_id: id,
+                        lang: lang.clone(),
+                    })
                     .await
                     .unwrap()
                     .into_inner();
@@ -132,7 +149,9 @@ async fn main() {
                     let mut h = warm_hist.lock().await;
                     h.record(dt.as_nanos() as u64).ok();
                 }
-                if pause > 0 { sleep(Duration::from_micros(pause)).await; }
+                if pause > 0 {
+                    sleep(Duration::from_micros(pause)).await;
+                }
             }
 
             barrier.wait().await; // ensure warmup for all workers done
@@ -141,19 +160,26 @@ async fn main() {
             // Measured ops
             for _ in 0..n {
                 for b in &mut payload {
-    *b = ALPH[rng.gen_range(0..ALPH.len())];
-}
+                    *b = ALPH[rng.gen_range(0..ALPH.len())];
+                }
                 let t1 = Instant::now();
 
                 let id = client
-                    .intern(InternRequest { lang: lang.clone(), text: payload.clone() })
+                    .intern(InternRequest {
+                        lang: lang.clone(),
+                        text: payload.clone(),
+                        text_id: 0,
+                    })
                     .await
                     .unwrap()
                     .into_inner()
                     .text_id;
 
                 let _ = client
-                    .get(GetRequest { text_id: id, lang: lang.clone() })
+                    .get(GetRequest {
+                        text_id: id,
+                        lang: lang.clone(),
+                    })
                     .await
                     .unwrap()
                     .into_inner();
@@ -163,7 +189,9 @@ async fn main() {
                     let mut h = hist.lock().await;
                     h.record(dt.as_nanos() as u64).ok();
                 }
-                if pause > 0 { sleep(Duration::from_micros(pause)).await; }
+                if pause > 0 {
+                    sleep(Duration::from_micros(pause)).await;
+                }
             }
 
             // Put client back (not strictly needed)
@@ -190,20 +218,23 @@ async fn main() {
     println!("Elapsed: {:.3}s", elapsed.as_secs_f64());
     println!("Ops (Intern+Get pairs): {}", total_ops);
     println!("Throughput: {:.0} pairs/sec", total_pairs_per_sec);
-    println!("Latency per pair (nanos): p50={}  p95={}  p99={}  max={}",
+    println!(
+        "Latency per pair (nanos): p50={}  p95={}  p99={}  max={}",
         hist.value_at_quantile(0.50),
         hist.value_at_quantile(0.95),
         hist.value_at_quantile(0.99),
         hist.max()
     );
-    println!("Latency per pair (micros): p50={:.1}  p95={:.1}  p99={:.1}  max={:.1}",
+    println!(
+        "Latency per pair (micros): p50={:.1}  p95={:.1}  p99={:.1}  max={:.1}",
         hist.value_at_quantile(0.50) as f64 / 1_000.0,
         hist.value_at_quantile(0.95) as f64 / 1_000.0,
         hist.value_at_quantile(0.99) as f64 / 1_000.0,
         hist.max() as f64 / 1_000.0
     );
 
-    println!("\n(Warmup stats, ignored in throughput): p50={}ns  p95={}ns  p99={}ns",
+    println!(
+        "\n(Warmup stats, ignored in throughput): p50={}ns  p95={}ns  p99={}ns",
         warm_hist.value_at_quantile(0.50),
         warm_hist.value_at_quantile(0.95),
         warm_hist.value_at_quantile(0.99)
