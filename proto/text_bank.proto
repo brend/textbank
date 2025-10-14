@@ -1,59 +1,176 @@
 syntax = "proto3";
 package textbank;
 
+// TextBank gRPC service definition.
+//
+// TextBank is a high-performance multilingual text storage and retrieval service
+// that provides efficient storage, deduplication, and search capabilities for
+// text content across multiple languages.
+//
+// Key features:
+// - Automatic text normalization (Unicode NFC)
+// - Hash-based content deduplication
+// - Language-aware storage and retrieval
+// - Regular expression search across languages
+// - Concurrent access with high throughput
 service TextBank {
-  // Insert or update a text translation. If text_id is unset/0, allocate.
+  // Inserts or updates a text translation with optional ID specification.
+  //
+  // Supports two modes of operation:
+  // - Insert mode: When text_id is 0/unset, performs idempotent insert by content.
+  //   Returns existing ID if (language, text) pair already exists, otherwise allocates new ID.
+  // - Update mode: When text_id is specified, updates or inserts text for that specific ID.
+  //
+  // All text content is automatically normalized using Unicode NFC normalization
+  // to ensure consistent representation regardless of input encoding.
   rpc Intern(InternRequest) returns (InternReply);
 
-  // Get a text translation by id, optionally specifying a language.
+  // Retrieves a text translation by ID with optional language filtering.
+  //
+  // When language is specified, returns the text in that specific language.
+  // When language is empty/unset, returns text in a preferred language
+  // (English first, then any available language).
   rpc Get(GetRequest) returns (GetReply);
 
-  // Get all translations for an id.
+  // Retrieves all available language translations for a specific text ID.
+  //
+  // Returns all language versions of the text content associated with
+  // the given ID, useful for managing multilingual content.
   rpc GetAll(GetAllRequest) returns (GetAllReply);
 
-  // Search texts by regex, optionally restricting to a language.
+  // Searches text content using regular expressions with optional language filtering.
+  //
+  // Supports both language-specific and cross-language search:
+  // - When language is specified, searches only within that language
+  // - When language is empty, searches across all languages (preferring English results)
+  //
+  // The regex pattern is applied to normalized (Unicode NFC) text content.
+  // Uses Rust regex syntax for pattern matching.
   rpc Search(SearchRequest) returns (SearchReply);
 }
 
+// Request message for inserting or updating text content.
 message InternRequest {
-  bytes text = 1;        // UTF-8
-  string lang = 2;       // required, e.g. "en"
-  uint64 text_id = 3;    // optional; 0 means "allocate / idempotent by text"
+  // Raw text content as UTF-8 encoded bytes.
+  // The service will normalize this content using Unicode NFC normalization
+  // to ensure consistent storage regardless of input encoding.
+  bytes text = 1;
+
+  // Language code for the text content (required).
+  // Should follow standard language codes like "en", "fr", "de", "zh", etc.
+  // Used for language-specific indexing and retrieval operations.
+  string lang = 2;
+
+  // Optional text ID for update operations.
+  //
+  // When set to 0 or unset: Performs idempotent insert by content.
+  //   - Returns existing ID if (language, text) pair already exists
+  //   - Allocates new ID if content is new
+  //
+  // When set to specific ID: Updates or inserts text for that ID.
+  uint64 text_id = 3;
 }
+
+// Response message for intern operations.
 message InternReply {
+  // The unique text identifier for the stored content.
+  // Either newly allocated or existing ID depending on operation mode.
   uint64 text_id = 1;
-  bool existed = 2;      // true if (lang,text) already existed OR we updated an existing (id,lang)
+
+  // Indicates whether the text content already existed in the system.
+  //
+  // true: Content already existed or an existing ID was updated
+  // false: New content was inserted with a newly allocated ID
+  bool existed = 2;
 }
 
+// Request message for retrieving text content by ID.
 message GetRequest {
+  // The unique text identifier to retrieve.
   uint64 text_id = 1;
-  string lang = 2;       // optional; empty = any
-}
-message GetReply {
-  bool found = 1;
-  bytes text = 2;        // UTF-8
+
+  // Optional language filter for the retrieval.
+  //
+  // When specified: Returns text in that specific language if available.
+  // When empty/unset: Returns text in preferred language (English first, then any).
+  string lang = 2;
 }
 
-message GetAllRequest {
-  uint64 text_id = 1;
-}
-message GetAllReply {
-  uint64 text_id = 1;
-  repeated Translation translations = 2;
-}
-message Translation {
-  string lang = 1;
+// Response message for get operations.
+message GetReply {
+  // Indicates whether the requested text was found.
+  //
+  // false: No text exists for the given ID (and language, if specified)
+  bool found = 1;
+
+  // The text content as UTF-8 encoded bytes.
+  //
+  // Only populated when found=true.
+  // Content is returned in normalized form (Unicode NFC).
   bytes text = 2;
 }
 
-message SearchRequest {
-  string pattern = 1;    // Rust regex syntax; applied to normalized (NFC) text
-  string lang = 2;       // optional; empty = search across all languages
-}
-message SearchHit {
+// Request message for retrieving all language translations of a text.
+message GetAllRequest {
+  // The unique text identifier to retrieve all translations for.
   uint64 text_id = 1;
-  bytes text = 2;        // the matching text (in the chosen language)
 }
+
+// Response message containing all available translations for a text ID.
+message GetAllReply {
+  // Echo of the requested text ID for reference.
+  uint64 text_id = 1;
+
+  // List of all available language translations for this text ID.
+  //
+  // May be empty if the text ID does not exist.
+  repeated Translation translations = 2;
+}
+
+// Represents a single language translation of text content.
+message Translation {
+  // Language code for this translation (e.g., "en", "fr", "de").
+  string lang = 1;
+
+  // The text content as UTF-8 encoded bytes.
+  //
+  // Content is stored in normalized form (Unicode NFC).
+  bytes text = 2;
+}
+
+// Request message for searching text content using regular expressions.
+message SearchRequest {
+  // Regular expression pattern to search for.
+  //
+  // Uses Rust regex syntax (https://docs.rs/regex/latest/regex/#syntax).
+  // Pattern is matched against normalized (Unicode NFC) text content.
+  // Examples: "hello.*world", "^test", "\\d+", "(?i)case.insensitive"
+  string pattern = 1;
+
+  // Optional language filter for the search.
+  //
+  // When specified: Searches only within that language.
+  // When empty/unset: Searches across all languages, preferring English results.
+  string lang = 2;
+}
+
+// Represents a single search result hit.
+message SearchHit {
+  // The unique text identifier for the matching content.
+  uint64 text_id = 1;
+
+  // The matching text content as UTF-8 encoded bytes.
+  //
+  // Contains the text in the language that matched the search
+  // (or preferred language for cross-language searches).
+  bytes text = 2;
+}
+
+// Response message containing search results.
 message SearchReply {
+  // List of matching text entries.
+  //
+  // Results are not guaranteed to be in any specific order.
+  // May be empty if no matches were found.
   repeated SearchHit hits = 1;
 }

@@ -2,24 +2,75 @@
 name = "textbank"
 version = "0.1.0"
 edition = "2021"
+authors = ["TextBank Contributors"]
+description = "High-performance multilingual text storage and retrieval service with gRPC API"
+readme = "README.md"
+homepage = "https://github.com/example/textbank"
+repository = "https://github.com/example/textbank"
+license = "MIT OR Apache-2.0"
+keywords = ["grpc", "text", "storage", "multilingual", "database"]
+categories = ["database", "web-programming", "text-processing"]
+rust-version = "1.70"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+# Async runtime and core functionality
 tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "fs", "signal"] }
+
+# gRPC framework and Protocol Buffers
 tonic = "0.12"
 prost = "0.13"
+
+# High-performance concurrent data structures
 dashmap = "6"
-unicode-normalization = "0.1"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
 parking_lot = "0.12"
 
+# Text processing and normalization
+unicode-normalization = "0.1"
+regex = "1.12.2"
+
+# Hashing algorithm for content deduplication
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Serialization for WAL persistence
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# Benchmarking dependencies
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 rand = "0.8"
-regex = "1.12.2"
 
 [build-dependencies]
+# Protocol buffer code generation
 tonic-build = "0.12"
 prost-build = "0.13"
+
+# Binary targets
+[[bin]]
+name = "textbank"
+path = "src/main.rs"
+doc = true
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+doc = true
+
+[profile.release]
+# Optimizations for production deployment
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+# Optimizations for benchmarking
+debug = true
+lto = "thin"
