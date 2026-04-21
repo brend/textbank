@@ -133,13 +133,25 @@ async fn run_repl(mut client: TextBankClient<Channel>) -> Result<()> {
     Ok(())
 }
 
+fn split_command_line(line: &str) -> std::result::Result<Vec<String>, shell_words::ParseError> {
+    shell_words::split(line)
+}
+
 async fn handle_command(client: &mut TextBankClient<Channel>, line: &str) -> Result<()> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
+    let parts = match split_command_line(line) {
+        Ok(parts) => parts,
+        Err(e) => {
+            eprintln!("Parse error: {}", e);
+            return Ok(());
+        }
+    };
     if parts.is_empty() {
         return Ok(());
     }
 
-    match parts[0] {
+    let part_refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+
+    match part_refs[0] {
         "help" => {
             println!("{}", HELP_TEXT);
         }
@@ -148,16 +160,16 @@ async fn handle_command(client: &mut TextBankClient<Channel>, line: &str) -> Res
             std::process::exit(0);
         }
         "intern" => {
-            handle_intern_command(client, &parts[1..]).await?;
+            handle_intern_command(client, &part_refs[1..]).await?;
         }
         "get" => {
-            handle_get_command(client, &parts[1..]).await?;
+            handle_get_command(client, &part_refs[1..]).await?;
         }
         "getall" => {
-            handle_getall_command(client, &parts[1..]).await?;
+            handle_getall_command(client, &part_refs[1..]).await?;
         }
         "search" => {
-            handle_search_command(client, &parts[1..]).await?;
+            handle_search_command(client, &part_refs[1..]).await?;
         }
         "stats" => {
             handle_stats_command(client).await?;
@@ -165,7 +177,7 @@ async fn handle_command(client: &mut TextBankClient<Channel>, line: &str) -> Res
         _ => {
             println!(
                 "Unknown command: {}. Type 'help' for available commands.",
-                parts[0]
+                part_refs[0]
             );
         }
     }
@@ -360,4 +372,28 @@ async fn handle_stats_command(client: &mut TextBankClient<Channel>) -> Result<()
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_command_line;
+
+    #[test]
+    fn split_command_line_supports_quoted_text_arguments() {
+        let parts = split_command_line(r#"intern en "Hello world""#).expect("parse should succeed");
+        assert_eq!(parts, vec!["intern", "en", "Hello world"]);
+    }
+
+    #[test]
+    fn split_command_line_supports_escaped_quotes() {
+        let parts =
+            split_command_line(r#"intern en "She said \"hi\"""#).expect("parse should succeed");
+        assert_eq!(parts, vec!["intern", "en", r#"She said "hi""#]);
+    }
+
+    #[test]
+    fn split_command_line_rejects_unclosed_quotes() {
+        let result = split_command_line(r#"intern en "Hello world"#);
+        assert!(result.is_err(), "unclosed quote should return parse error");
+    }
 }

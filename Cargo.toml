@@ -47,6 +47,7 @@ rand = "0.8"
 
 # REPL dependencies
 rustyline = "14"
+shell-words = "1.1"
 
 [build-dependencies]
 # Protocol buffer code generation
@@ -72,7 +73,6 @@ doc = true
 name = "repl"
 path = "src/bin/repl.rs"
 doc = true
-description = "Interactive REPL for TextBank service"
 
 [[bench]]
 name = "store_bench"
