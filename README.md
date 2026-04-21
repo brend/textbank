@@ -32,7 +32,6 @@ All text content is normalized using Unicode NFC and indexed using XXH3 hashing 
 ### Building
 
 ```bash
-git clone <repository-url>
 cd textbank
 cargo build --release
 ```
@@ -40,7 +39,7 @@ cargo build --release
 ### Running the Server
 
 ```bash
-# Start the server (listens on 0.0.0.0:50051)
+# Start the server (listens on 127.0.0.1:50051)
 cargo run
 
 # Or run the release build directly
@@ -49,7 +48,7 @@ cargo run
 
 The server will:
 - Create `./data/` directory for persistence
-- Load existing data from `./data/textbank.wal` on startup
+- Load existing data from `./data/wal.jsonl` on startup
 - Listen for gRPC connections on port 50051
 
 ## API Reference
@@ -251,10 +250,9 @@ Goodbye!
 
 - **Auto-start Service**: Automatically starts the TextBank gRPC service
 - **Case-insensitive Search**: Search is case-insensitive by default
-- **Rich Output**: Colored output with success/error indicators (✓/✗)
+- **Readable Output**: Clear success/error indicators (✓/✗)
 - **Command History**: Uses rustyline for command history and editing
 - **Error Handling**: Graceful error messages with helpful hints
-- **Tab Completion**: Basic command completion support
 
 ### Advanced Search Patterns
 
@@ -294,36 +292,20 @@ chmod +x textbank.sh
 ./textbank.sh get 1 en
 # Output: Hello, World!
 
-# Get all translations
-./textbank.sh get-all 1
-# Output: {"textId":"1","translations":[{"lang":"en","text":"SGVsbG8sIFdvcmxkIQ=="}]}
-
-# Search text
-./textbank.sh search "Hello.*"
-# Output: {"hits":[{"textId":"1","text":"SGVsbG8sIFdvcmxkIQ=="}]}
+# Start interactive script mode (intern/get/help/quit)
+./textbank.sh repl
 ```
 
 ### CLI Examples
 
 ```bash
-# Multilingual content
 ./textbank.sh intern en "Hello"
-./textbank.sh intern fr "Bonjour" 1  # Update ID 1 with French
-./textbank.sh intern es "Hola" 1     # Add Spanish to ID 1
-
-# Retrieve specific languages
-./textbank.sh get 1 en    # "Hello"
-./textbank.sh get 1 fr    # "Bonjour"
-./textbank.sh get 1 es    # "Hola"
-
-# Get all translations
-./textbank.sh get-all 1   # Returns all languages for ID 1
-
-# Search examples
-./textbank.sh search "^H.*"          # Words starting with H
-./textbank.sh search "ell" en        # "ell" in English only
-./textbank.sh search "(?i)hello"     # Case-insensitive search
+./textbank.sh get 1 en
+./textbank.sh get 1 en b64
+./textbank.sh get 1 en json
 ```
+
+`textbank.sh` currently wraps only `Intern` and `Get`. Use the REPL (`cargo run --bin repl`) or a gRPC client for `GetAll` and `Search`.
 
 ### Environment Variables
 
@@ -354,8 +336,8 @@ cargo run --bin bench -- \
 ### Benchmark Options
 
 - `--target`: Server address (default: `http://127.0.0.1:50051`)
-- `--ops`: Total measured operations (default: 100,000)
-- `--concurrency`: Concurrent workers (default: 64)
+- `--ops`: Total measured operations (default: 100,000, must be > 0)
+- `--concurrency`: Concurrent workers (default: 64, must be > 0)
 - `--payload-bytes`: Random text size (default: 24)
 - `--lang`: Language code (default: `en`)
 - `--warmup-ops`: Warmup operations (default: 10,000)  
@@ -377,6 +359,16 @@ Microseconds -> p50:      12.4  p95:      28.9  p99:      45.1  p99.9:      78.5
 Milliseconds -> p50:     0.012  p95:     0.029  p99:     0.045  p99.9:     0.078  max:     0.235
 ```
 
+### Microbenchmarks (Criterion)
+
+For in-process performance tracking of core `Store` operations (`intern_with_id`, `get_text`, `search`):
+
+```bash
+cargo bench --bench store_bench
+```
+
+This complements the gRPC load benchmark by isolating hot-path behavior inside the Rust storage layer.
+
 ## Performance Characteristics
 
 TextBank is optimized for high-throughput scenarios:
@@ -394,8 +386,8 @@ TextBank is optimized for high-throughput scenarios:
 TextBank uses a simple but effective persistence model:
 
 - **Format**: JSON-lines for human readability and debugging
-- **Location**: `./data/textbank.wal`
-- **Durability**: Optional fsync after each write (configurable)
+- **Location**: `./data/wal.jsonl`
+- **Durability**: Optional `flush()` after each write (configurable)
 - **Recovery**: Automatic replay on startup
 
 Example WAL entries:
@@ -409,8 +401,9 @@ Example WAL entries:
 
 On startup, TextBank:
 1. Replays all WAL entries to rebuild indexes
-2. Sets the next ID counter to `max_id + 1`
-3. Resumes normal operation
+2. Ignores a truncated final WAL line (for crash-tolerant recovery)
+3. Sets the next ID counter to `max_id + 1`
+4. Resumes normal operation
 
 ## Dependencies
 
@@ -442,13 +435,14 @@ All text content is automatically normalized using Unicode NFC (Canonical Compos
 
 ### Hashing and Deduplication
 
-TextBank uses XXH3-64 hashing with a language-specific salt:
-- Hash key: `language + "\u{001F}" + normalized_text`
-- Non-ASCII separator reduces collision probability
+TextBank uses XXH3-64 hashing of normalized text with language-scoped buckets:
+- Bucket key: `(language, xxh3(normalized_text))`
 - Fast hash computation for high throughput
-- Collision resolution through content comparison
+- Collision resolution through full normalized-text comparison within each bucket
 
 ## Development
+
+Maintenance notes for future work are in [`MAINTENANCE.md`](./MAINTENANCE.md).
 
 ### Building from Source
 
@@ -526,15 +520,12 @@ Current limitations and future enhancements:
 
 ## License
 
-[Add your license information here]
+Dual-licensed as `MIT OR Apache-2.0` (see `Cargo.toml`).
 
 ## Contributing
 
-[Add contributing guidelines here]
+Contributions are welcome. Please open an issue or pull request in your repository host.
 
 ## Support
 
-For questions, issues, or contributions:
-- [Add issue tracker URL]
-- [Add discussion forum/chat]
-- [Add documentation links]
+Use your repository issue tracker for bugs and feature requests.

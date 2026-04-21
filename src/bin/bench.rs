@@ -23,6 +23,7 @@
 use clap::Parser;
 use hdrhistogram::Histogram;
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
@@ -65,15 +66,15 @@ struct Args {
     ///
     /// Each operation consists of one Intern request followed by one Get request.
     /// The total number of gRPC calls will be 2x this value.
-    #[arg(long, default_value_t = 100_000)]
-    ops: usize,
+    #[arg(long, default_value = "100000")]
+    ops: NonZeroUsize,
 
     /// Number of concurrent worker tasks
     ///
     /// Controls the level of parallelism in the benchmark. Higher values
     /// increase load but may also increase contention and latency.
-    #[arg(long, default_value_t = 64)]
-    concurrency: usize,
+    #[arg(long, default_value = "64")]
+    concurrency: NonZeroUsize,
 
     /// Size of random text payload in bytes
     ///
@@ -142,9 +143,11 @@ async fn main() {
     // Print configuration summary
     println!("TextBank Benchmark Configuration:");
     println!("Target: {}", args.target);
+    let concurrency = args.concurrency.get();
+    let ops = args.ops.get();
     println!(
         "Concurrency: {} workers | Operations: {} | Payload: {}B | Warmup: {}",
-        args.concurrency, args.ops, args.payload_bytes, args.warmup_ops
+        concurrency, ops, args.payload_bytes, args.warmup_ops
     );
 
     if args.pause_us > 0 {
@@ -166,33 +169,32 @@ async fn main() {
 
     // Pre-create clients to avoid connection overhead during benchmark
     // Each worker gets a dedicated client to eliminate connection contention
-    let mut clients = Vec::with_capacity(args.concurrency);
-    println!("Establishing {} client connections...", args.concurrency);
+    let mut clients = Vec::with_capacity(concurrency);
+    println!("Establishing {} client connections...", concurrency);
 
-    for i in 0..args.concurrency {
+    for i in 0..concurrency {
         clients.push(mk_client(&args.target).await);
-        if (i + 1) % 10 == 0 || i + 1 == args.concurrency {
-            println!("Connected {}/{} clients", i + 1, args.concurrency);
+        if (i + 1) % 10 == 0 || i + 1 == concurrency {
+            println!("Connected {}/{} clients", i + 1, concurrency);
         }
     }
 
     let clients = Arc::new(parking_lot::Mutex::new(clients));
 
     // Synchronization barriers for coordinated execution
-    let barrier = Arc::new(Barrier::new(args.concurrency)); // End of warmup sync
-    let start_gate = Arc::new(Barrier::new(args.concurrency)); // Start of measurement sync
+    let barrier = Arc::new(Barrier::new(concurrency)); // End of warmup sync
+    let start_gate = Arc::new(Barrier::new(concurrency + 1)); // Start of measurement sync
 
     // Distribute work evenly across workers with remainder handling
-    let warm_ops_per_worker = args.warmup_ops / args.concurrency.max(1);
-    let ops_per_worker = args.ops / args.concurrency.max(1);
+    let warm_ops_per_worker = args.warmup_ops / concurrency;
+    let ops_per_worker = ops / concurrency;
 
-    let benchmark_start = Instant::now();
     let mut handles = Vec::new();
 
     println!("Starting warmup phase...");
 
     // Spawn worker tasks
-    for worker_id in 0..args.concurrency {
+    for worker_id in 0..concurrency {
         let clients = clients.clone();
         let barrier = barrier.clone();
         let start_gate = start_gate.clone();
@@ -204,13 +206,13 @@ async fn main() {
 
         // Handle remainder operations by assigning them to the first worker
         let warm_ops = if worker_id == 0 {
-            warm_ops_per_worker + (args.warmup_ops % args.concurrency)
+            warm_ops_per_worker + (args.warmup_ops % concurrency)
         } else {
             warm_ops_per_worker
         };
 
         let measured_ops = if worker_id == 0 {
-            ops_per_worker + (args.ops % args.concurrency)
+            ops_per_worker + (ops % concurrency)
         } else {
             ops_per_worker
         };
@@ -331,24 +333,31 @@ async fn main() {
         handles.push(handle);
     }
 
-    // Wait for all workers to complete
+    // Wait until all workers are ready to start measured operations, then start timing.
+    start_gate.wait().await;
+    let measured_start = Instant::now();
+
+    // Wait for all workers to complete measured work.
     for handle in handles {
         handle.await.expect("Worker task panicked");
     }
 
-    let total_elapsed = benchmark_start.elapsed();
+    let measured_elapsed = measured_start.elapsed();
 
     // Extract final histograms for analysis
     let final_hist = hist.lock().await.clone();
     let warmup_hist = warm_hist.lock().await.clone();
 
     // Calculate performance metrics
-    let total_ops = args.ops as u64;
-    let throughput_ops_per_sec = (total_ops as f64) / total_elapsed.as_secs_f64();
+    let total_ops = ops as u64;
+    let throughput_ops_per_sec = (total_ops as f64) / measured_elapsed.as_secs_f64();
 
     // Print comprehensive results
     println!("\n=== BENCHMARK RESULTS ===");
-    println!("Total elapsed time: {:.3}s", total_elapsed.as_secs_f64());
+    println!(
+        "Measured phase elapsed time: {:.3}s",
+        measured_elapsed.as_secs_f64()
+    );
     println!("Measured operations: {} (Intern+Get pairs)", total_ops);
     println!(
         "Throughput: {:.0} operations/second",
@@ -396,4 +405,22 @@ async fn main() {
     }
 
     println!("\nBenchmark completed successfully!");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn rejects_zero_concurrency() {
+        let parsed = Args::try_parse_from(["textbank-bench", "--concurrency", "0"]);
+        assert!(parsed.is_err(), "concurrency=0 must be rejected");
+    }
+
+    #[test]
+    fn rejects_zero_ops() {
+        let parsed = Args::try_parse_from(["textbank-bench", "--ops", "0"]);
+        assert!(parsed.is_err(), "ops=0 must be rejected");
+    }
 }

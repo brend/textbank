@@ -5,8 +5,6 @@ edition = "2021"
 authors = ["TextBank Contributors"]
 description = "High-performance multilingual text storage and retrieval service with gRPC API"
 readme = "README.md"
-homepage = "https://github.com/example/textbank"
-repository = "https://github.com/example/textbank"
 license = "MIT OR Apache-2.0"
 keywords = ["grpc", "text", "storage", "multilingual", "database"]
 categories = ["database", "web-programming", "text-processing"]
@@ -55,6 +53,10 @@ rustyline = "14"
 tonic-build = "0.12"
 prost-build = "0.13"
 
+[dev-dependencies]
+# Microbenchmark framework for in-process Store hot paths
+criterion = "0.5"
+
 # Binary targets
 [[bin]]
 name = "textbank"
@@ -71,6 +73,10 @@ name = "repl"
 path = "src/bin/repl.rs"
 doc = true
 description = "Interactive REPL for TextBank service"
+
+[[bench]]
+name = "store_bench"
+harness = false
 
 [profile.release]
 # Optimizations for production deployment
