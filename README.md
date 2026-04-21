@@ -51,6 +51,10 @@ The server will:
 - Load existing data from `./data/wal.jsonl` on startup
 - Listen for gRPC connections on port 50051
 
+Server durability can be configured with:
+
+- `TEXTBANK_DURABILITY`: one of `none`, `flush`, `fsync_data`, or `fsync_all` (default: `fsync_data`)
+
 ## API Reference
 
 TextBank exposes a comprehensive gRPC API with four main operations:
@@ -391,7 +395,7 @@ TextBank uses a simple but effective persistence model:
 
 - **Format**: JSON-lines for human readability and debugging
 - **Location**: `./data/wal.jsonl`
-- **Durability**: Optional `flush()` after each write (configurable)
+- **Durability**: Configurable commit mode (`none`, `flush`, `fsync_data`, `fsync_all`)
 - **Recovery**: Automatic replay on startup
 
 Example WAL entries:

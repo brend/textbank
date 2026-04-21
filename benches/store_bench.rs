@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use textbank::Store;
+use textbank::{Store, WalDurability};
 
 static NEXT_WAL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -18,7 +18,7 @@ fn make_wal_path(label: &str) -> PathBuf {
 fn make_store(label: &str) -> Store {
     let wal_path = make_wal_path(label);
     let _ = std::fs::remove_file(&wal_path);
-    Store::new(wal_path, false).expect("failed to create benchmark store")
+    Store::new(wal_path, WalDurability::None).expect("failed to create benchmark store")
 }
 
 fn bench_intern(c: &mut Criterion) {

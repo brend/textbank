@@ -4,16 +4,17 @@
 //! on the configured address and port.
 
 use std::sync::Arc;
-use textbank::{pb::text_bank_server::TextBankServer, Store, Svc};
+use textbank::{pb::text_bank_server::TextBankServer, Store, Svc, WalDurability};
 use tokio::signal;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting TextBank server...");
+    let wal_durability = WalDurability::from_env("TEXTBANK_DURABILITY")?;
 
     // Create the store with WAL persistence
-    let store = Arc::new(Store::new("data/wal.jsonl", true)?);
+    let store = Arc::new(Store::new("data/wal.jsonl", wal_durability)?);
 
     // Create the gRPC service
     let svc = Svc { store };
@@ -21,7 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure server address
     let addr = "127.0.0.1:50051".parse()?;
 
-    println!("TextBank server listening on {}", addr);
+    println!(
+        "TextBank server listening on {} (wal durability: {:?})",
+        addr, wal_durability
+    );
 
     // Start the gRPC server
     Server::builder()

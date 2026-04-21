@@ -14,8 +14,8 @@
 use regex::Regex;
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    io::{BufRead, BufReader, ErrorKind, Write},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -34,6 +34,53 @@ pub use pb::{
     text_bank_server::{TextBank, TextBankServer},
     *,
 };
+
+/// Durability mode for write-ahead-log commits.
+///
+/// The selected mode determines what happens after each append before a write is
+/// acknowledged:
+/// - `None`: no flush or fsync
+/// - `Flush`: `flush()` only
+/// - `FsyncData`: `flush()` + `sync_data()`
+/// - `FsyncAll`: `flush()` + `sync_all()`
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WalDurability {
+    None,
+    Flush,
+    #[default]
+    FsyncData,
+    FsyncAll,
+}
+
+impl WalDurability {
+    /// Parses a durability mode from an environment variable.
+    ///
+    /// If the variable is unset, returns the default production mode.
+    pub fn from_env(var_name: &str) -> Result<Self> {
+        match std::env::var(var_name) {
+            Ok(raw) => raw.parse(),
+            Err(std::env::VarError::NotPresent) => Ok(Self::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+impl std::str::FromStr for WalDurability {
+    type Err = anyhow::Error;
+
+    fn from_str(input: &str) -> Result<Self> {
+        let normalized = input.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "none" | "off" => Ok(Self::None),
+            "flush" => Ok(Self::Flush),
+            "fsync_data" | "fsync-data" | "data" => Ok(Self::FsyncData),
+            "fsync_all" | "fsync-all" | "all" => Ok(Self::FsyncAll),
+            _ => anyhow::bail!(
+                "invalid WAL durability mode '{input}'. expected one of: none, flush, fsync_data, fsync_all"
+            ),
+        }
+    }
+}
 
 /// Write-ahead log record persisted as one JSON object per line.
 ///
@@ -60,8 +107,8 @@ struct Wal {
     file: Mutex<File>,
     /// Path to the WAL file for error reporting
     path: PathBuf,
-    /// Whether to flush writes immediately to disk
-    flush_on_write: bool,
+    /// Durability behavior for acknowledged writes
+    durability: WalDurability,
 }
 
 impl Wal {
@@ -69,14 +116,14 @@ impl Wal {
     ///
     /// # Arguments
     /// * `path` - Path to the WAL file
-    /// * `flush_on_write` - Whether to flush writes immediately to disk
+    /// * `durability` - Durability behavior for acknowledged writes
     ///
     /// # Returns
     /// * `Result<Self>` - New WAL instance or error
     ///
     /// # Errors
     /// * Returns error if the file cannot be opened or created
-    fn open<P: Into<PathBuf>>(path: P, flush_on_write: bool) -> Result<Self> {
+    fn open<P: Into<PathBuf>>(path: P, durability: WalDurability) -> Result<Self> {
         let path = path.into();
 
         // Create parent directory if it doesn't exist
@@ -84,16 +131,45 @@ impl Wal {
             std::fs::create_dir_all(parent)?;
         }
 
-        let file = std::fs::OpenOptions::new()
-            .create(true)
+        // Try to create the WAL atomically so we can reliably detect first creation.
+        let (file, created_new) = match std::fs::OpenOptions::new()
+            .create_new(true)
             .append(true)
-            .open(&path)?;
+            .open(&path)
+        {
+            Ok(file) => (file, true),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?;
+                (file, false)
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if created_new {
+            Self::sync_parent_dir(path.parent())?;
+        }
 
         Ok(Wal {
             file: Mutex::new(file),
             path,
-            flush_on_write,
+            durability,
         })
+    }
+
+    #[cfg(unix)]
+    fn sync_parent_dir(parent: Option<&Path>) -> Result<()> {
+        if let Some(parent) = parent {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn sync_parent_dir(_parent: Option<&Path>) -> Result<()> {
+        Ok(())
     }
 
     /// Appends a record to the WAL.
@@ -107,8 +183,19 @@ impl Wal {
         let mut file = self.file.lock();
         serde_json::to_writer(&mut *file, record)?;
         writeln!(file)?;
-        if self.flush_on_write {
-            file.flush()?;
+        match self.durability {
+            WalDurability::None => {}
+            WalDurability::Flush => {
+                file.flush()?;
+            }
+            WalDurability::FsyncData => {
+                file.flush()?;
+                file.sync_data()?;
+            }
+            WalDurability::FsyncAll => {
+                file.flush()?;
+                file.sync_all()?;
+            }
         }
         Ok(())
     }
@@ -214,12 +301,12 @@ impl Store {
     ///
     /// # Arguments
     /// * `wal_path` - Path to the write-ahead log file
-    /// * `flush_on_write` - Whether to flush WAL writes immediately
+    /// * `durability` - WAL durability behavior for acknowledged writes
     ///
     /// # Returns
     /// * `Result<Self>` - New Store instance or error
-    pub fn new<P: Into<PathBuf>>(wal_path: P, flush_on_write: bool) -> Result<Self> {
-        let wal = Wal::open(wal_path, flush_on_write)?;
+    pub fn new<P: Into<PathBuf>>(wal_path: P, durability: WalDurability) -> Result<Self> {
+        let wal = Wal::open(wal_path, durability)?;
         let store = Store {
             forward: DashMap::new(),
             reverse: DashMap::new(),
@@ -573,7 +660,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetRequest, InternRequest, SearchRequest, Store, Svc, TextBank};
+    use super::{GetRequest, InternRequest, SearchRequest, Store, Svc, TextBank, WalDurability};
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -593,8 +680,12 @@ mod tests {
         wal_path
     }
 
+    fn make_store_with_durability(durability: WalDurability) -> Store {
+        Store::new(make_wal_path(), durability).expect("failed to create test store")
+    }
+
     fn make_store() -> Store {
-        Store::new(make_wal_path(), true).expect("failed to create test store")
+        make_store_with_durability(WalDurability::Flush)
     }
 
     fn replace_wal_file_with_read_only_handle(store: &Store) {
@@ -611,6 +702,52 @@ mod tests {
             .open(path)
             .expect("failed to reopen wal in append mode");
         *store.wal.file.lock() = append_file;
+    }
+
+    #[test]
+    fn wal_durability_default_is_fsync_data() {
+        assert_eq!(WalDurability::default(), WalDurability::FsyncData);
+    }
+
+    #[test]
+    fn wal_durability_parses_supported_values() {
+        assert_eq!(
+            "none".parse::<WalDurability>().unwrap(),
+            WalDurability::None
+        );
+        assert_eq!(
+            "flush".parse::<WalDurability>().unwrap(),
+            WalDurability::Flush
+        );
+        assert_eq!(
+            "fsync_data".parse::<WalDurability>().unwrap(),
+            WalDurability::FsyncData
+        );
+        assert_eq!(
+            "fsync_all".parse::<WalDurability>().unwrap(),
+            WalDurability::FsyncAll
+        );
+    }
+
+    #[test]
+    fn wal_durability_rejects_invalid_values() {
+        let result = "eventual".parse::<WalDurability>();
+        assert!(result.is_err(), "invalid durability mode must be rejected");
+    }
+
+    #[test]
+    fn intern_succeeds_with_fsync_durability_modes() {
+        for durability in [WalDurability::FsyncData, WalDurability::FsyncAll] {
+            let store = make_store_with_durability(durability);
+            let (id, existed) = store
+                .intern_with_id("en", b"durable-write", None)
+                .expect("insert should succeed for fsync modes");
+            assert!(!existed);
+            let value = store
+                .get_text(id, Some("en"))
+                .expect("stored value should be retrievable");
+            assert_eq!(value.as_str(), "durable-write");
+        }
     }
 
     #[test]
@@ -750,7 +887,8 @@ mod tests {
             .expect("failed to write truncated wal tail");
         drop(file);
 
-        let store = Store::new(&wal_path, true).expect("store should load with truncated wal tail");
+        let store = Store::new(&wal_path, WalDurability::Flush)
+            .expect("store should load with truncated wal tail");
         let text = store
             .get_text(1, Some("en"))
             .expect("valid records before tail must be replayed");
@@ -779,7 +917,7 @@ mod tests {
             .expect("failed to write trailing wal record");
         drop(file);
 
-        let result = Store::new(&wal_path, true);
+        let result = Store::new(&wal_path, WalDurability::Flush);
         assert!(
             result.is_err(),
             "corrupted non-tail record should fail startup to avoid silent data loss"
@@ -852,7 +990,8 @@ mod tests {
     #[test]
     fn wal_replay_preserves_latest_update_and_reverse_index_consistency() {
         let wal_path = make_wal_path();
-        let store = Store::new(&wal_path, true).expect("failed to create initial store");
+        let store =
+            Store::new(&wal_path, WalDurability::Flush).expect("failed to create initial store");
 
         let (id, _) = store
             .intern_with_id("en", b"first", None)
@@ -862,7 +1001,8 @@ mod tests {
             .expect("update should succeed");
         drop(store);
 
-        let reloaded = Store::new(&wal_path, true).expect("reloading from wal should succeed");
+        let reloaded =
+            Store::new(&wal_path, WalDurability::Flush).expect("reloading from wal should succeed");
 
         let current = reloaded
             .get_text(id, Some("en"))

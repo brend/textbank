@@ -65,15 +65,19 @@ async fn main() -> Result<()> {
 
 async fn start_textbank_service() -> Result<()> {
     // Import the main textbank service code
-    use textbank::{pb::text_bank_server::TextBankServer, Store, Svc};
+    use textbank::{pb::text_bank_server::TextBankServer, Store, Svc, WalDurability};
     use tonic::transport::Server;
 
-    let store = Arc::new(Store::new("data/wal.jsonl", true)?);
+    let wal_durability = WalDurability::from_env("TEXTBANK_DURABILITY")?;
+    let store = Arc::new(Store::new("data/wal.jsonl", wal_durability)?);
     let svc = Svc { store };
 
     let addr = "127.0.0.1:50051".parse()?;
 
-    println!("TextBank service listening on {}", addr);
+    println!(
+        "TextBank service listening on {} (wal durability: {:?})",
+        addr, wal_durability
+    );
 
     Server::builder()
         .add_service(TextBankServer::new(svc))

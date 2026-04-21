@@ -89,6 +89,6 @@ Key tests currently cover:
 
 ## Known constraints
 
-- Durability currently uses `flush()` (not explicit `fsync`).
+- WAL durability is configurable (`none`, `flush`, `fsync_data`, `fsync_all`), defaulting to `fsync_data`.
 - WAL has no compaction yet.
 - `RevEntry.text_arc` is retained intentionally for collision-safe candidate matching.
