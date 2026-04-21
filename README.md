@@ -172,7 +172,10 @@ message SearchHit {
 
 **Search Behavior:**
 - **Language-specific** (`lang` specified): Searches only within that language
-- **Cross-language** (`lang` empty): Searches all languages, preferring English results
+- **Cross-language** (`lang` empty):
+  - Evaluates the regex against all translations for each `text_id`
+  - Returns each matching `text_id` at most once
+  - Returns English text when available; otherwise returns a matching translation
 - **Pattern**: Uses Rust regex syntax, applied to normalized text
 
 ## Interactive REPL
@@ -250,9 +253,10 @@ Goodbye!
 
 - **Auto-start Service**: Automatically starts the TextBank gRPC service
 - **Case-insensitive Search**: Search is case-insensitive by default
+- **Quote-aware Parsing**: Supports shell-style quoting/escaping for arguments (e.g. `"Hello world"`, `\"`)
 - **Readable Output**: Clear success/error indicators (✓/✗)
 - **Command History**: Uses rustyline for command history and editing
-- **Error Handling**: Graceful error messages with helpful hints
+- **Error Handling**: Graceful error messages with helpful hints, including parse errors for malformed input
 
 ### Advanced Search Patterns
 
@@ -423,6 +427,8 @@ On startup, TextBank:
 - **hdrhistogram**: High dynamic range histograms
 - **rand**: Random number generation
 - **regex**: Regular expression engine
+- **rustyline**: Interactive REPL line editing and history
+- **shell-words**: Shell-style REPL command parsing
 
 ## Text Processing
 
@@ -461,14 +467,21 @@ cargo build --bin repl      # Interactive REPL
 cargo build --bin bench     # Benchmark tool
 
 # Run tests
-cargo test
+cargo test --all-features --locked
 
 # Code formatting
-cargo fmt
+cargo fmt --all -- --check
 
 # Linting
-cargo clippy
+cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+### Continuous Integration
+
+Primary quality checks run in `.github/workflows/ci.yml` on `push` and `pull_request`:
+- formatting (`cargo fmt --all -- --check`)
+- linting (`cargo clippy --all-targets --all-features -- -D warnings`)
+- tests (`cargo test --all-features --locked`)
 
 ### Protocol Buffer Schema
 

@@ -18,6 +18,12 @@ This file captures behavior that should remain stable across refactors.
   - `next_id` must only advance after successful WAL append for insert mode.
   - Explicit update IDs must advance allocator if they are >= current `next_id`.
 
+- Search semantics:
+  - `Store::search(pattern, Some(lang))` only searches within that language.
+  - `Store::search(pattern, None)` must evaluate all translations for each ID.
+  - Cross-language search returns each matching ID once.
+  - Cross-language result payload prefers English when present, else a matching translation.
+
 - WAL replay:
   - Replays valid JSON-lines records in order.
   - A truncated final line is treated as a crash tail and ignored.
@@ -26,6 +32,11 @@ This file captures behavior that should remain stable across refactors.
 - Text normalization and encoding:
   - Input bytes are converted with `String::from_utf8_lossy` then NFC-normalized.
   - Invalid UTF-8 is currently accepted with replacement characters and dedups deterministically.
+
+- REPL parsing:
+  - REPL command parsing is shell-style via `shell_words`.
+  - Quoted arguments and escaped quotes must be parsed correctly.
+  - Unclosed quotes should return a user-visible parse error (not panic).
 
 - Bench metrics:
   - Throughput must be measured from measured-phase start only (not warmup).
@@ -36,21 +47,33 @@ This file captures behavior that should remain stable across refactors.
 Run before/after meaningful storage or API changes:
 
 ```bash
-cargo test -q
-cargo clippy -q
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features --locked
 cargo bench --bench store_bench
 ```
 
 Key tests currently cover:
 
 - dedup idempotency and update behavior
+- cross-language search matching and preferred payload behavior
 - WAL append failure non-mutation
 - truncated-tail replay vs non-tail corruption handling
 - collision-safe dedup candidate matching
 - language-scoped dedup
 - allocator behavior after explicit IDs
 - gRPC validation/error mapping and default-language retrieval
+- REPL shell-style parsing for quoted and malformed input
 - bench argument validation
+
+## Quality CI
+
+- Workflow: `.github/workflows/ci.yml`
+- Triggers: `push`, `pull_request`, and manual `workflow_dispatch`
+- Gates:
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-features --locked`
 
 ## Benchmark CI
 
