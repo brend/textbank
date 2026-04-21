@@ -285,7 +285,8 @@ impl Store {
             }
             entries.push(RevEntry { text_arc, text_id });
         } else {
-            self.reverse.insert(key, vec![RevEntry { text_arc, text_id }]);
+            self.reverse
+                .insert(key, vec![RevEntry { text_arc, text_id }]);
         }
     }
 
@@ -465,16 +466,22 @@ impl Store {
                     }
                 }
                 None => {
-                    // Search all languages, prefer English
-                    let text = lang_map
-                        .get("en")
-                        .map(|v| v.value().clone())
-                        .or_else(|| lang_map.iter().next().map(|kv| kv.value().clone()));
-
-                    if let Some(text) = text {
-                        if regex.is_match(&text) {
-                            results.push((id, text));
+                    // Cross-language search: match against any translation.
+                    // Result payload prefers English when available.
+                    let first_matching = lang_map.iter().find_map(|entry| {
+                        if regex.is_match(entry.value()) {
+                            Some(entry.value().clone())
+                        } else {
+                            None
                         }
+                    });
+
+                    if let Some(matching_text) = first_matching {
+                        let preferred = lang_map
+                            .get("en")
+                            .map(|entry| entry.value().clone())
+                            .unwrap_or(matching_text);
+                        results.push((id, preferred));
                     }
                 }
             }
@@ -490,10 +497,9 @@ impl Store {
         let hash = Self::rev_hash(old_text);
         let key = (lang.to_string(), hash);
         if let Some(mut entries) = self.reverse.get_mut(&key) {
-            if let Some(pos) = entries
-                .iter()
-                .position(|entry| entry.text_id == expected_id && entry.text_arc.as_str() == old_text)
-            {
+            if let Some(pos) = entries.iter().position(|entry| {
+                entry.text_id == expected_id && entry.text_arc.as_str() == old_text
+            }) {
                 entries.remove(pos);
                 let remove_bucket = entries.is_empty();
                 drop(entries);
@@ -567,21 +573,22 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GetRequest, InternRequest, SearchRequest, Store, Svc, TextBank,
-    };
+    use super::{GetRequest, InternRequest, SearchRequest, Store, Svc, TextBank};
     use std::fs::{File, OpenOptions};
     use std::io::Write;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use tonic::{Code, Request};
 
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
 
     fn make_wal_path() -> std::path::PathBuf {
         let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let wal_path =
-            std::env::temp_dir().join(format!("textbank_store_test_{}_{}.jsonl", std::process::id(), id));
+        let wal_path = std::env::temp_dir().join(format!(
+            "textbank_store_test_{}_{}.jsonl",
+            std::process::id(),
+            id
+        ));
         let _ = std::fs::remove_file(&wal_path);
         wal_path
     }
@@ -635,7 +642,10 @@ mod tests {
             .intern_with_id("en", b"B", Some(id))
             .expect("update to B should succeed");
         assert_eq!(updated_id, id);
-        assert!(updated_existed, "updating existing lang on id should set existed=true");
+        assert!(
+            updated_existed,
+            "updating existing lang on id should set existed=true"
+        );
 
         let (new_id_for_a, existed_again) = store
             .intern_with_id("en", b"A", None)
@@ -687,8 +697,14 @@ mod tests {
         let err = store.intern_with_id("en", b"should-fail", None);
         assert!(err.is_err(), "insert must fail when WAL append fails");
 
-        assert!(store.forward.is_empty(), "forward index must remain unchanged");
-        assert!(store.reverse.is_empty(), "reverse index must remain unchanged");
+        assert!(
+            store.forward.is_empty(),
+            "forward index must remain unchanged"
+        );
+        assert!(
+            store.reverse.is_empty(),
+            "reverse index must remain unchanged"
+        );
         assert_eq!(
             *store.next_id.lock(),
             1,
@@ -744,7 +760,11 @@ mod tests {
             store.get_text(2, Some("en")).is_none(),
             "truncated tail record must not be applied"
         );
-        assert_eq!(*store.next_id.lock(), 2, "next_id should be derived from last valid record");
+        assert_eq!(
+            *store.next_id.lock(),
+            2,
+            "next_id should be derived from last valid record"
+        );
     }
 
     #[test]
@@ -803,7 +823,10 @@ mod tests {
             .intern_with_id("en", b"alpha", None)
             .expect("insert should succeed");
 
-        assert!(!existed, "different text in same hash bucket must not dedup");
+        assert!(
+            !existed,
+            "different text in same hash bucket must not dedup"
+        );
         assert_ne!(id, 999, "must not return id from non-matching candidate");
     }
 
@@ -896,7 +919,10 @@ mod tests {
             .intern_with_id("en", b"seed", Some(explicit_id))
             .expect("explicit-id update should succeed");
         assert_eq!(id, explicit_id);
-        assert!(!existed, "new language slot on explicit id should report existed=false");
+        assert!(
+            !existed,
+            "new language slot on explicit id should report existed=false"
+        );
 
         let (next_id, next_existed) = store
             .intern_with_id("en", b"fresh", None)
@@ -906,6 +932,51 @@ mod tests {
             next_id,
             explicit_id + 1,
             "allocator should continue after highest explicit id"
+        );
+    }
+
+    #[test]
+    fn search_without_language_matches_any_translation_and_prefers_english_payload() {
+        let store = make_store();
+
+        let (id, _) = store
+            .intern_with_id("en", b"hello world", None)
+            .expect("english insert should succeed");
+        store
+            .intern_with_id("fr", b"bonjour le monde", Some(id))
+            .expect("french insert on same id should succeed");
+
+        let hits = store
+            .search("bonjour", None)
+            .expect("cross-language search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, id);
+        assert_eq!(
+            hits[0].1.as_str(),
+            "hello world",
+            "cross-language results should prefer english payload when available"
+        );
+    }
+
+    #[test]
+    fn search_without_language_returns_matching_payload_when_english_missing() {
+        let store = make_store();
+
+        let (id, _) = store
+            .intern_with_id("fr", b"bonjour le monde", None)
+            .expect("french insert should succeed");
+
+        let hits = store
+            .search("bonjour", None)
+            .expect("cross-language search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, id);
+        assert_eq!(
+            hits[0].1.as_str(),
+            "bonjour le monde",
+            "matching payload should be returned when english translation is absent"
         );
     }
 
