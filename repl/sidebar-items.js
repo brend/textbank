@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["HELP_TEXT"],"fn":["connect_to_service","handle_command","handle_get_command","handle_getall_command","handle_intern_command","handle_search_command","handle_stats_command","main","run_repl","start_textbank_service"]};
+window.SIDEBAR_ITEMS = {"constant":["HELP_TEXT"],"fn":["connect_to_service","handle_command","handle_get_command","handle_getall_command","handle_intern_command","handle_search_command","handle_stats_command","main","run_repl","split_command_line","start_textbank_service"]};
